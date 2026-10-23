@@ -17,8 +17,8 @@ write_files:
     permissions: "0600"
     content: |
       # --- EDIT THESE ---
-      DOMAIN=openmrs.example.com
-      CERT_EMAIL=you@example.com
+      DOMAIN=digipaths.openclinical.net
+      CERT_EMAIL=matt.south@openclinical.net
       DEPLOY_REPO_URL=https://github.com/digipaths-lk/openmrs-distro-referenceapplication-digitalocean
       DISTRO_REPO_URL=https://github.com/digipaths-lk/openmrs-distro-referenceapplication
       DISTRO_BRANCH=clinicalview
