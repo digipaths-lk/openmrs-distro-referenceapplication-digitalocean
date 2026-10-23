@@ -1,0 +1,103 @@
+#cloud-config
+# Provisions an Ubuntu 24.04 DigitalOcean Droplet that rebuilds and redeploys the
+# OpenMRS distro every night. See README.md.
+#
+# EDIT the values in the "settings" file below before creating the Droplet.
+
+package_update: true
+package_upgrade: true
+packages:
+  - git
+  - ca-certificates
+  - curl
+  - openssl
+
+write_files:
+  - path: /etc/openmrs-nightly/settings
+    permissions: "0600"
+    content: |
+      # --- EDIT THESE ---
+      DOMAIN=openmrs.example.com
+      CERT_EMAIL=you@example.com
+      DEPLOY_REPO_URL=https://github.com/digipaths-lk/openmrs-distro-referenceapplication-digitalocean
+      DISTRO_REPO_URL=https://github.com/digipaths-lk/openmrs-distro-referenceapplication
+      DISTRO_BRANCH=clinicalview
+      CHART_REPO_URL=https://github.com/digipaths-lk/openmrs-esm-patient-chart
+      CHART_BRANCH=main
+      # Set to true for a fresh database after every nightly build
+      WIPE_DATA=false
+
+  - path: /etc/systemd/system/openmrs-nightly.service
+    content: |
+      [Unit]
+      Description=Rebuild and redeploy OpenMRS from git
+      After=docker.service network-online.target
+      Requires=docker.service
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      EnvironmentFile=/etc/openmrs-nightly/settings
+      ExecStart=/opt/openmrs/deploy/nightly-build.sh
+      TimeoutStartSec=4h
+
+  - path: /etc/systemd/system/openmrs-nightly.timer
+    content: |
+      [Unit]
+      Description=Nightly OpenMRS build
+
+      [Timer]
+      # Server time is UTC on DigitalOcean images
+      OnCalendar=*-*-* 02:00:00
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+
+  - path: /usr/local/sbin/openmrs-bootstrap
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      . /etc/openmrs-nightly/settings
+
+      # 4 GB swap as headroom for the Maven + frontend builds
+      if [ ! -f /swapfile ]; then
+        fallocate -l 4G /swapfile
+        chmod 600 /swapfile
+        mkswap /swapfile
+        swapon /swapfile
+        echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      fi
+
+      curl -fsSL https://get.docker.com | sh
+
+      mkdir -p /opt/frontend-tgz /opt/openmrs
+      clone() { [ -d "$3" ] || git clone --branch "$2" "$1" "$3"; }
+      clone "$DEPLOY_REPO_URL" main            /opt/openmrs/deploy
+      clone "$DISTRO_REPO_URL" "$DISTRO_BRANCH" /opt/openmrs/distro
+      clone "$CHART_REPO_URL"  "$CHART_BRANCH"  /opt/openmrs/chart
+
+      # Generate DB passwords on the server so they never appear in user-data.
+      # COMPOSE_FILE must list the override file explicitly, otherwise setting it
+      # disables the automatic override and the build: contexts are lost.
+      # .env is untracked in the distro checkout, so git leaves it alone.
+      if [ ! -f /opt/openmrs/distro/.env ]; then
+        umask 077
+        cat > /opt/openmrs/distro/.env <<EOF
+      COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.ssl.yml
+      SSL_MODE=prod
+      CERT_WEB_DOMAINS=$DOMAIN
+      CERT_CONTACT_EMAIL=$CERT_EMAIL
+      MYSQL_ROOT_PASSWORD=$(openssl rand -hex 24)
+      OMRS_DB_PASSWORD=$(openssl rand -hex 24)
+      EOF
+      fi
+
+      systemctl daemon-reload
+      systemctl enable --now openmrs-nightly.timer
+
+runcmd:
+  - [/usr/local/sbin/openmrs-bootstrap]
+
+final_message: "OpenMRS nightly host ready after $UPTIME s. Run: systemctl start openmrs-nightly"
